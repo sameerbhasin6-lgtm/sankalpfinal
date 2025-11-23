@@ -64,6 +64,7 @@ st.markdown("""
 def load_data():
     """
     Loads data from the uploaded file or the default Sankalp.xlsx.
+    Handles cases where .xlsx files might actually be CSVs.
     """
     uploaded_file = st.sidebar.file_uploader("Upload WTP Data (Optional)", type=['xlsx', 'csv'])
     
@@ -75,7 +76,12 @@ def load_data():
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(uploaded_file)
             else:
-                df = pd.read_excel(uploaded_file)
+                try:
+                    df = pd.read_excel(uploaded_file)
+                except:
+                    # Fallback: Try reading uploaded xlsx as csv
+                    uploaded_file.seek(0)
+                    df = pd.read_csv(uploaded_file)
             st.sidebar.success("Custom file loaded!")
         except Exception as e:
             st.sidebar.error(f"Error loading uploaded file: {e}")
@@ -84,15 +90,22 @@ def load_data():
     if df is None:
         default_file = "Sankalp.xlsx"
         try:
-            # Check if excel exists, if not try csv fallback (common in some envs)
+            # Attempt 1: Read as Standard Excel
             try:
                 df = pd.read_excel(default_file)
-            except:
-                df = pd.read_csv("Sankalp.csv")
+            except Exception:
+                # Attempt 2: Read as CSV (even if named .xlsx)
+                # This fixes the specific error where a CSV is saved with an xlsx extension
+                try:
+                    df = pd.read_csv(default_file)
+                except:
+                     # Attempt 3: Try looking for the .csv filename variant
+                    df = pd.read_csv("Sankalp.csv")
             
             st.sidebar.info(f"Using default dataset: {default_file}")
+            
         except Exception as e:
-            st.error(f"Could not find '{default_file}' or 'Sankalp.csv'. Please upload a file.")
+            st.error(f"Could not load data. Please upload a file manually. (Error: {e})")
             return None
 
     return df
@@ -101,26 +114,29 @@ def revenue_objective(price, wtp_array):
     """
     Objective function for Differential Evolution.
     Returns NEGATIVE revenue (since DE minimizes).
-    
-    Logic: If Price = P, Demand = Count(WTP >= P).
-           Revenue = P * Demand.
     """
     p = price[0]
     # Demand is the number of customers willing to pay >= price p
     demand = np.sum(wtp_array >= p)
     revenue = p * demand
-    return -revenue # Minimize negative revenue to maximize positive revenue
+    return -revenue 
 
 def get_optimal_price(wtp_series):
     """
-    Runs Differential Evolution to find the optimal price for a single product column.
+    Runs Differential Evolution to find the optimal price.
     """
-    wtp_values = wtp_series.dropna().values
+    # Clean data: drop NaNs and ensure numeric
+    wtp_values = pd.to_numeric(wtp_series, errors='coerce').dropna().values
+    
     if len(wtp_values) == 0:
-        return 0, 0
+        return 0, 0, 0
         
     min_price = float(wtp_values.min())
     max_price = float(wtp_values.max())
+    
+    # If all prices are the same or 0
+    if min_price == max_price:
+        return min_price, min_price * len(wtp_values), len(wtp_values)
     
     bounds = [(min_price, max_price)]
     
@@ -137,7 +153,6 @@ def get_optimal_price(wtp_series):
     )
     
     opt_price = result.x[0]
-    # Calculate demand and revenue at this optimal price
     opt_demand = np.sum(wtp_values >= opt_price)
     opt_revenue = opt_price * opt_demand
     
@@ -145,9 +160,9 @@ def get_optimal_price(wtp_series):
 
 def generate_demand_curve(df, products, opt_prices):
     """
-    Generates a synthetic demand curve for the Bundle for plotting.
+    Generates a synthetic demand curve for the Bundle.
     """
-    # Create a Bundle WTP column if not exists
+    # Create a Bundle WTP column
     bundle_wtp = df[products].sum(axis=1)
     
     min_p = bundle_wtp.min() * 0.5
